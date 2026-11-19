@@ -70,8 +70,31 @@
   #modal .box { background: var(--card); border-radius: 14px; padding: 24px; max-width: 380px; width: 100%; }
   #modal p { margin: 0 0 20px; font-size: 17px; }
   #modal .actions { display: flex; gap: 10px; justify-content: flex-end; }
-  #confirmYes { background: var(--rec); color: #fff; border: none; }
+  #confirmYes, #stopSave, #leftSave { background: var(--accent); color: #fff; border: none; }
+  #confirmYes { background: var(--rec); }
+
+  .line.gap { color: #b06000; font-style: italic; font-size: .8em; background: #fff4e5; padding: 6px 10px; border-radius: 8px; }
+
+  #hint {
+    display: none; margin: 0 20px 12px; padding: 10px 16px; border-radius: 10px;
+    background: #fff4e5; color: #8a4b00; font-size: 16px;
+  }
+  #hint.show { display: block; }
+
+  #resume {
+    display: none; margin: 0 20px 12px; width: calc(100% - 40px);
+    background: var(--rec); color: #fff; border: none; font-size: 20px; font-weight: 600; padding: 18px;
+  }
+  #resume.show { display: block; }
+
+  #leftover { display: none; margin: 0 20px 12px; padding: 14px 16px; border-radius: 10px; background: #e8f0fe; font-size: 16px; }
+  #leftover.show { display: block; }
+  #leftover .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 </style>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1f6feb">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
 </head>
 <body>
 
@@ -93,6 +116,16 @@
 </div>
 
 <div id="msg"></div>
+<button id="resume">⚠️ La trascrizione si è fermata — TOCCA QUI per riprendere</button>
+<div id="hint">⚠️ Durante la riunione <b>non chiudere questa pagina</b>, non passare ad altre app e non spegnere lo schermo: altrimenti la trascrizione si ferma.</div>
+<div id="leftover">
+  📝 C'è ancora il testo di una riunione precedente (<span id="leftDate"></span>).
+  <div class="actions">
+    <button id="leftSave">📄 Scarica Word</button>
+    <button id="leftNew">🗑️ Inizia una nuova riunione</button>
+    <button id="leftKeep">Continua quella</button>
+  </div>
+</div>
 
 <main>
   <div id="transcript">
@@ -110,6 +143,16 @@
     <div class="actions">
       <button id="confirmNo">Annulla</button>
       <button id="confirmYes">Sì, cancella</button>
+    </div>
+  </div>
+</div>
+
+<div id="stopModal" style="position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;padding:20px">
+  <div class="box" style="background:#fff;border-radius:14px;padding:24px;max-width:400px;width:100%">
+    <p style="margin:0 0 20px;font-size:18px">⏸️ Trascrizione fermata.<br>Vuoi scaricare adesso il documento Word della riunione?</p>
+    <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+      <button id="stopLater">Più tardi</button>
+      <button id="stopSave">📄 Scarica Word</button>
     </div>
   </div>
 </div>
@@ -180,7 +223,7 @@
   }
   function makeLine(l) {
     const p = document.createElement('p');
-    p.className = 'line';
+    p.className = l.gap ? 'line gap' : 'line';
     const s = document.createElement('span');
     s.className = 'time'; s.textContent = l.t;
     p.appendChild(s);
@@ -227,6 +270,7 @@
   function stopTimer() {
     if (startTime) elapsedBefore += Date.now() - startTime;
     startTime = null; clearInterval(timerInt);
+    $('timer').textContent = fmt(elapsedBefore);
   }
 
   // ---------- Schermo sempre acceso ----------
@@ -242,6 +286,71 @@
     toggleBtn.classList.toggle('rec', running);
     $('dot').classList.toggle('on', running);
     $('statusText').textContent = running ? 'Sto ascoltando…' : 'In pausa';
+    $('hint').classList.toggle('show', running);
+    if (!running) $('resume').classList.remove('show');
+  }
+
+  // ---------- Interruzioni (pagina chiusa, schermo spento, internet assente) ----------
+  let pausedAt = null;     // quando la trascrizione si è interrotta senza che l'utente premesse Ferma
+  let pausedWhy = '';
+  function markPaused(why) {
+    if (!pausedAt) { pausedAt = Date.now(); pausedWhy = why; }
+  }
+  function addGapIfNeeded() {
+    if (!pausedAt) return;
+    const from = new Date(pausedAt), to = new Date();
+    if (to - from > 5000) {
+      const l = { t: hm(from), gap: true,
+        text: '— Trascrizione interrotta dalle ' + hm(from) + ' alle ' + hm(to) + ' (' + pausedWhy + '): quello che è stato detto in questo intervallo manca —' };
+      lines.push(l);
+      if (!interimEl || !box.contains(interimEl)) render(); else box.insertBefore(makeLine(l), interimEl);
+      persist(); scrollDown();
+    }
+    pausedAt = null; pausedWhy = '';
+  }
+  function restartNow() {
+    if (!running) return;
+    try { rec && rec.abort(); } catch (e) {}
+    rec = createRec();
+    try { rec.start(); } catch (e) { $('resume').classList.add('show'); }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!running) return;
+    if (document.hidden) {
+      markPaused('pagina chiusa o schermo spento');
+    } else {
+      addGapIfNeeded();
+      restartNow();
+      keepAwake();
+      show('Bentornato: la trascrizione è ripartita. Nel testo è segnato il pezzo mancante.', 'info');
+    }
+  });
+  window.addEventListener('offline', () => {
+    if (!running) return;
+    markPaused('internet assente');
+    show('⚠️ Internet assente: la trascrizione è in pausa. Riparte da sola appena torna la connessione.', 'err');
+  });
+  window.addEventListener('online', () => {
+    if (!running) return;
+    addGapIfNeeded();
+    restartNow();
+    show('Connessione tornata: la trascrizione è ripartita.', 'info');
+  });
+  $('resume').onclick = () => { $('resume').classList.remove('show'); addGapIfNeeded(); restartNow(); };
+
+  // Batteria bassa
+  async function checkBattery() {
+    try {
+      if (!navigator.getBattery) return;
+      const b = await navigator.getBattery();
+      const warn = () => {
+        if (running && !b.charging && b.level <= 0.2)
+          show('🔋 Batteria al ' + Math.round(b.level * 100) + '%: collega il caricatore, altrimenti la riunione si interrompe.', 'err');
+      };
+      b.addEventListener('levelchange', warn); b.addEventListener('chargingchange', warn);
+      warn();
+    } catch (e) {}
   }
 
   function createRec() {
@@ -264,6 +373,9 @@
     };
 
     r.onerror = (ev) => {
+      // a pagina nascosta Chrome blocca il microfono: non è un vero errore, si riparte al ritorno
+      if (document.hidden) return;
+      if (ev.error === 'network') { markPaused('problema di connessione'); }
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
         running = false; setUI(); stopTimer(); releaseAwake();
         show('Il microfono è bloccato. Clicca sull\'icona a sinistra dell\'indirizzo in alto e consenti l\'uso del microfono, poi premi di nuovo Avvia.', 'err');
@@ -279,14 +391,19 @@
     // Chrome si ferma da solo dopo un po' di silenzio: se stiamo ancora registrando, riparte
     r.onend = () => {
       setInterim('');
-      if (running) {
+      if (running && !document.hidden) {
         setTimeout(() => {
-          if (!running) return;
+          if (!running || document.hidden || r !== rec) return;
           try { r.start(); } catch (e) { rec = createRec(); try { rec.start(); } catch (e2) {} }
-        }, IS_ANDROID ? 50 : 250);
+        }, pausedAt ? 1500 : (IS_ANDROID ? 50 : 250));
       }
     };
-    r.onstart = () => { if (msg.className === 'err' && running) msg.className = ''; };
+    r.onstart = () => {
+      if (!running) return;
+      $('resume').classList.remove('show');
+      if (pausedAt && navigator.onLine && !document.hidden) addGapIfNeeded();
+      if (msg.className === 'err' && /connessione|Internet/.test(msg.textContent)) msg.className = '';
+    };
     return r;
   }
 
@@ -295,18 +412,28 @@
     running = true;
     if (!meetingStart) { meetingStart = Date.now(); persist(); }
     if (!lines.length) render();
+    $('leftover').classList.remove('show');
+    pausedAt = null;
     rec = createRec();
     try { rec.start(); } catch (e) {}
-    setUI(); startTimer(); keepAwake();
+    setUI(); startTimer(); keepAwake(); checkBattery();
   }
   function stop() {
     running = false;
+    pausedAt = null;
     try { rec && rec.stop(); } catch (e) {}
     setUI(); stopTimer(); releaseAwake(); persist();
   }
 
   // ---------- Pulsanti ----------
-  toggleBtn.onclick = () => (running ? stop() : start());
+  toggleBtn.onclick = () => {
+    if (running) {
+      stop();
+      if (lines.some(l => !l.gap)) $('stopModal').style.display = 'flex';
+    } else start();
+  };
+  $('stopLater').onclick = () => { $('stopModal').style.display = 'none'; };
+  $('stopSave').onclick = () => { $('stopModal').style.display = 'none'; $('save').click(); };
 
   function meetingDate() { return new Date(meetingStart || Date.now()); }
   function hm(d) { return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -355,7 +482,11 @@
     if (running) stop();
     lines = []; elapsedBefore = 0; meetingStart = null; $('timer').textContent = '00:00:00';
     persist(); render(); $('statusText').textContent = 'Pronto';
+    $('leftover').classList.remove('show');
   };
+  $('leftSave').onclick = () => $('save').click();
+  $('leftNew').onclick = () => $('clear').click();
+  $('leftKeep').onclick = () => $('leftover').classList.remove('show');
 
   $('bigger').onclick = () => { fontSize = Math.min(44, fontSize + 2); box.style.fontSize = fontSize + 'px'; persist(); };
   $('smaller').onclick = () => { fontSize = Math.max(14, fontSize - 2); box.style.fontSize = fontSize + 'px'; persist(); };
@@ -374,6 +505,13 @@
     show('Stai usando Samsung Internet: per una trascrizione affidabile apri questa pagina con Google Chrome.', 'err');
   } else if (lines.length) {
     $('statusText').textContent = 'Testo della riunione precedente recuperato';
+    $('leftDate').textContent = meetingDate().toLocaleDateString('it-IT') + ' ore ' + hm(meetingDate());
+    $('leftover').classList.add('show');
+  }
+
+  // Permette di installare la pagina come app (icona sulla schermata Home)
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 })();
 </script>

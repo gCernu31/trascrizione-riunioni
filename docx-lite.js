@@ -104,6 +104,7 @@
     body.push(para(run(o.title || 'Riunione'), 'Title'));
     if (o.subtitle) body.push(para(run(o.subtitle, { color: '6E6E73' }), null, 360));
     for (const l of (o.lines || [])) {
+      if (l.gap) { body.push(para(run(l.text, { color: 'B06000', size: 20 }), null, 120)); continue; }
       body.push(para(run(l.t + '   ', { bold: true, color: '8A8A8E', size: 20 }) + run(l.text), null, 120));
     }
     if (!(o.lines || []).length) body.push(para(run('(Nessun testo trascritto)', { color: '8A8A8E' })));
