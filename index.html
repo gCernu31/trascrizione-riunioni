@@ -83,7 +83,7 @@
 <div class="bar">
   <button id="toggle">▶ Avvia</button>
   <button id="copy">📋 Copia testo</button>
-  <button id="save">💾 Salva file</button>
+  <button id="save">📄 Scarica Word</button>
   <button id="clear">🗑️ Nuova riunione</button>
   <span class="spacer"></span>
   <div class="size">Testo
@@ -99,7 +99,7 @@
     <div class="empty" id="empty">
       Premi <b>Avvia</b> e parla normalmente.<br>
       Il testo comparirà qui mentre le persone parlano.<br>
-      A fine riunione premi <b>Salva file</b> per tenerne una copia.
+      A fine riunione premi <b>Scarica Word</b> per tenerne una copia.
     </div>
   </div>
 </main>
@@ -114,6 +114,7 @@
   </div>
 </div>
 
+<script src="docx-lite.js"></script>
 <script>
 (function () {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -128,15 +129,23 @@
   let startTime = null, timerInt = null, elapsedBefore = 0;
   let fontSize = 22;
   let wakeLock = null;
+  let meetingStart = null; // momento del primo "Avvia" della riunione (ms)
 
   // ---------- Salvataggio automatico nel browser ----------
   function persist() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify({ lines, fontSize })); } catch (e) {}
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        lines, fontSize, meetingStart, elapsed: elapsedBefore + (startTime ? Date.now() - startTime : 0)
+      }));
+    } catch (e) {}
   }
   function restore() {
     try {
       const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-      if (d) { lines = d.lines || []; fontSize = d.fontSize || 22; }
+      if (d) {
+        lines = d.lines || []; fontSize = d.fontSize || 22;
+        meetingStart = d.meetingStart || null; elapsedBefore = d.elapsed || 0;
+      }
     } catch (e) {}
   }
 
@@ -157,7 +166,7 @@
     if (!lines.length && !running) {
       const e = document.createElement('div');
       e.className = 'empty'; e.id = 'empty';
-      e.innerHTML = 'Premi <b>Avvia</b> e parla normalmente.<br>Il testo comparirà qui mentre le persone parlano.<br>A fine riunione premi <b>Salva file</b> per tenerne una copia.';
+      e.innerHTML = 'Premi <b>Avvia</b> e parla normalmente.<br>Il testo comparirà qui mentre le persone parlano.<br>A fine riunione premi <b>Scarica Word</b> per tenerne una copia.';
       box.appendChild(e);
       return;
     }
@@ -273,6 +282,7 @@
   function start() {
     if (!SR) return;
     running = true;
+    if (!meetingStart) { meetingStart = Date.now(); persist(); }
     if (!lines.length) render();
     rec = createRec();
     try { rec.start(); } catch (e) {}
@@ -281,16 +291,21 @@
   function stop() {
     running = false;
     try { rec && rec.stop(); } catch (e) {}
-    setUI(); stopTimer(); releaseAwake();
+    setUI(); stopTimer(); releaseAwake(); persist();
   }
 
   // ---------- Pulsanti ----------
   toggleBtn.onclick = () => (running ? stop() : start());
 
+  function meetingDate() { return new Date(meetingStart || Date.now()); }
+  function hm(d) { return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+  function titleText() { return 'Riunione del ' + meetingDate().toLocaleDateString('it-IT'); }
+  function subtitleText() {
+    const dur = elapsedBefore + (startTime ? Date.now() - startTime : 0);
+    return 'Inizio ore ' + hm(meetingDate()) + ' · Durata ' + fmt(dur);
+  }
   function plainText() {
-    const d = new Date();
-    const head = 'Riunione del ' + d.toLocaleDateString('it-IT') + '\n\n';
-    return head + lines.map(l => '[' + l.t + '] ' + l.text).join('\n');
+    return titleText() + '\n' + subtitleText() + '\n\n' + lines.map(l => '[' + l.t + '] ' + l.text).join('\n');
   }
 
   $('copy').onclick = async () => {
@@ -301,11 +316,20 @@
 
   $('save').onclick = () => {
     if (!lines.length) return show('Non c\'è ancora testo da salvare.', 'err');
-    const d = new Date();
-    const name = 'Riunione_' + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    const d = meetingDate();
+    const base = 'Riunione_' + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
       String(d.getDate()).padStart(2, '0') + '_' + String(d.getHours()).padStart(2, '0') + 'h' +
-      String(d.getMinutes()).padStart(2, '0') + '.txt';
-    const blob = new Blob([plainText()], { type: 'text/plain;charset=utf-8' });
+      String(d.getMinutes()).padStart(2, '0');
+    let blob, name;
+    try {
+      const bytes = window.makeDocx({ title: titleText(), subtitle: subtitleText(), lines });
+      blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      name = base + '.docx';
+    } catch (e) {
+      // se per qualche motivo il Word non si crea, salva almeno il testo semplice
+      blob = new Blob([plainText()], { type: 'text/plain;charset=utf-8' });
+      name = base + '.txt';
+    }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
@@ -318,7 +342,7 @@
   $('confirmYes').onclick = () => {
     $('modal').classList.remove('show');
     if (running) stop();
-    lines = []; elapsedBefore = 0; $('timer').textContent = '00:00:00';
+    lines = []; elapsedBefore = 0; meetingStart = null; $('timer').textContent = '00:00:00';
     persist(); render(); $('statusText').textContent = 'Pronto';
   };
 
@@ -331,6 +355,7 @@
   // ---------- Avvio ----------
   restore();
   render();
+  $('timer').textContent = fmt(elapsedBefore);
   if (!SR) {
     toggleBtn.disabled = true;
     show('Questo browser non supporta la trascrizione. Apri questa pagina con Google Chrome o Microsoft Edge.', 'err');
