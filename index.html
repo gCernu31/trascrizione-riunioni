@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trascrizione Riunioni</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1f; --muted: #6e6e73;
+    --line: #e3e1dc; --accent: #1f6feb; --rec: #d93025; --ok: #188038;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--ink); min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 16px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    background: var(--card); border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 20px; margin: 0; flex: 1; min-width: 200px; }
+  #status { font-size: 15px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  #dot { width: 12px; height: 12px; border-radius: 50%; background: #bbb; }
+  #dot.on { background: var(--rec); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  #timer { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
+
+  .bar {
+    padding: 14px 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  }
+  button {
+    font: inherit; font-size: 17px; padding: 12px 20px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer;
+  }
+  button:hover { border-color: #c9c6bf; }
+  button:disabled { opacity: .45; cursor: default; }
+  #toggle {
+    font-size: 20px; font-weight: 600; padding: 16px 32px; border: none;
+    background: var(--accent); color: #fff; min-width: 220px;
+  }
+  #toggle.rec { background: var(--rec); }
+  .spacer { flex: 1; }
+  .size { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 15px; }
+  .size button { padding: 8px 14px; font-size: 16px; }
+
+  main { flex: 1; padding: 0 20px 20px; display: flex; }
+  #transcript {
+    flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px 24px; overflow-y: auto; font-size: 22px; line-height: 1.55;
+    min-height: 300px; max-height: calc(100vh - 200px);
+  }
+  .line { margin: 0 0 10px; }
+  .time { color: var(--muted); font-size: .7em; margin-right: 8px; font-variant-numeric: tabular-nums; }
+  .interim { color: var(--muted); font-style: italic; }
+  .empty { color: var(--muted); text-align: center; margin-top: 60px; font-size: 18px; line-height: 1.6; }
+
+  #msg {
+    margin: 0 20px 12px; padding: 12px 16px; border-radius: 10px; font-size: 16px; display: none;
+  }
+  #msg.err { display: block; background: #fdecea; color: #a50e0e; }
+  #msg.info { display: block; background: #e6f4ea; color: var(--ok); }
+
+  /* Finestra di conferma */
+  #modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none;
+    align-items: center; justify-content: center; padding: 20px;
+  }
+  #modal.show { display: flex; }
+  #modal .box { background: var(--card); border-radius: 14px; padding: 24px; max-width: 380px; width: 100%; }
+  #modal p { margin: 0 0 20px; font-size: 17px; }
+  #modal .actions { display: flex; gap: 10px; justify-content: flex-end; }
+  #confirmYes { background: var(--rec); color: #fff; border: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎙️ Trascrizione Riunioni</h1>
+  <div id="status"><span id="dot"></span><span id="statusText">Pronto</span> · <span id="timer">00:00:00</span></div>
+</header>
+
+<div class="bar">
+  <button id="toggle">▶ Avvia</button>
+  <button id="copy">📋 Copia testo</button>
+  <button id="save">💾 Salva file</button>
+  <button id="clear">🗑️ Nuova riunione</button>
+  <span class="spacer"></span>
+  <div class="size">Testo
+    <button id="smaller" aria-label="Testo più piccolo">A−</button>
+    <button id="bigger" aria-label="Testo più grande">A+</button>
+  </div>
+</div>
+
+<div id="msg"></div>
+
+<main>
+  <div id="transcript">
+    <div class="empty" id="empty">
+      Premi <b>Avvia</b> e parla normalmente.<br>
+      Il testo comparirà qui mentre le persone parlano.<br>
+      A fine riunione premi <b>Salva file</b> per tenerne una copia.
+    </div>
+  </div>
+</main>
+
+<div id="modal">
+  <div class="box">
+    <p>Vuoi cancellare il testo attuale e iniziare una nuova riunione?<br><small>Se non l'hai salvato, verrà perso.</small></p>
+    <div class="actions">
+      <button id="confirmNo">Annulla</button>
+      <button id="confirmYes">Sì, cancella</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const $ = (id) => document.getElementById(id);
+  const box = $('transcript'), toggleBtn = $('toggle'), msg = $('msg');
+  const STORE_KEY = 'trascrizione-riunioni-v1';
+
+  let lines = [];          // { t: "HH:MM", text: "..." }
+  let running = false;     // l'utente vuole che stia ascoltando
+  let rec = null;
+  let interimEl = null;
+  let startTime = null, timerInt = null, elapsedBefore = 0;
+  let fontSize = 22;
+  let wakeLock = null;
+
+  // ---------- Salvataggio automatico nel browser ----------
+  function persist() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify({ lines, fontSize })); } catch (e) {}
+  }
+  function restore() {
+    try {
+      const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      if (d) { lines = d.lines || []; fontSize = d.fontSize || 22; }
+    } catch (e) {}
+  }
+
+  // ---------- Messaggi ----------
+  function show(text, type) {
+    msg.textContent = text; msg.className = type || '';
+    if (type === 'info') setTimeout(() => { if (msg.textContent === text) msg.className = ''; }, 3000);
+  }
+
+  // ---------- Disegno ----------
+  function nowHM() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+  function render() {
+    box.innerHTML = '';
+    box.style.fontSize = fontSize + 'px';
+    if (!lines.length && !running) {
+      const e = document.createElement('div');
+      e.className = 'empty'; e.id = 'empty';
+      e.innerHTML = 'Premi <b>Avvia</b> e parla normalmente.<br>Il testo comparirà qui mentre le persone parlano.<br>A fine riunione premi <b>Salva file</b> per tenerne una copia.';
+      box.appendChild(e);
+      return;
+    }
+    for (const l of lines) box.appendChild(makeLine(l));
+    interimEl = document.createElement('p');
+    interimEl.className = 'line interim';
+    box.appendChild(interimEl);
+    scrollDown();
+  }
+  function makeLine(l) {
+    const p = document.createElement('p');
+    p.className = 'line';
+    const s = document.createElement('span');
+    s.className = 'time'; s.textContent = l.t;
+    p.appendChild(s);
+    p.appendChild(document.createTextNode(l.text));
+    return p;
+  }
+  function addFinal(text) {
+    text = text.trim();
+    if (!text) return;
+    text = text.charAt(0).toUpperCase() + text.slice(1);
+    const l = { t: nowHM(), text };
+    lines.push(l);
+    if (!interimEl || !box.contains(interimEl)) render();
+    else box.insertBefore(makeLine(l), interimEl);
+    persist();
+    scrollDown();
+  }
+  function setInterim(text) {
+    if (!interimEl || !box.contains(interimEl)) render();
+    interimEl.textContent = text;
+    scrollDown();
+  }
+  function scrollDown() {
+    // scorre in basso solo se l'utente è già vicino al fondo
+    if (box.scrollHeight - box.scrollTop - box.clientHeight < 200) box.scrollTop = box.scrollHeight;
+  }
+
+  // ---------- Timer ----------
+  function fmt(ms) {
+    const s = Math.floor(ms / 1000);
+    return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':');
+  }
+  function startTimer() {
+    startTime = Date.now();
+    timerInt = setInterval(() => { $('timer').textContent = fmt(elapsedBefore + Date.now() - startTime); }, 500);
+  }
+  function stopTimer() {
+    if (startTime) elapsedBefore += Date.now() - startTime;
+    startTime = null; clearInterval(timerInt);
+  }
+
+  // ---------- Schermo sempre acceso ----------
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  function releaseAwake() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
+  document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') keepAwake(); });
+
+  // ---------- Riconoscimento vocale ----------
+  function setUI() {
+    toggleBtn.textContent = running ? '■ Ferma' : '▶ Avvia';
+    toggleBtn.classList.toggle('rec', running);
+    $('dot').classList.toggle('on', running);
+    $('statusText').textContent = running ? 'Sto ascoltando…' : 'In pausa';
+  }
+
+  function createRec() {
+    const r = new SR();
+    r.lang = 'it-IT';
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onresult = (ev) => {
+      let interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        if (res.isFinal) addFinal(res[0].transcript);
+        else interim += res[0].transcript;
+      }
+      setInterim(interim);
+    };
+
+    r.onerror = (ev) => {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        running = false; setUI(); stopTimer(); releaseAwake();
+        show('Il microfono è bloccato. Clicca sull\'icona a sinistra dell\'indirizzo in alto e consenti l\'uso del microfono, poi premi di nuovo Avvia.', 'err');
+      } else if (ev.error === 'network') {
+        show('Problema di connessione a internet. Riprovo da solo…', 'err');
+      } else if (ev.error === 'audio-capture') {
+        running = false; setUI(); stopTimer(); releaseAwake();
+        show('Nessun microfono trovato. Controlla che sia collegato.', 'err');
+      }
+      // 'no-speech' e 'aborted' si gestiscono da soli col riavvio
+    };
+
+    // Chrome si ferma da solo dopo un po' di silenzio: se stiamo ancora registrando, riparte
+    r.onend = () => {
+      setInterim('');
+      if (running) {
+        setTimeout(() => {
+          if (!running) return;
+          try { r.start(); } catch (e) { rec = createRec(); try { rec.start(); } catch (e2) {} }
+        }, 250);
+      }
+    };
+    r.onstart = () => { if (msg.className === 'err' && running) msg.className = ''; };
+    return r;
+  }
+
+  function start() {
+    if (!SR) return;
+    running = true;
+    if (!lines.length) render();
+    rec = createRec();
+    try { rec.start(); } catch (e) {}
+    setUI(); startTimer(); keepAwake();
+  }
+  function stop() {
+    running = false;
+    try { rec && rec.stop(); } catch (e) {}
+    setUI(); stopTimer(); releaseAwake();
+  }
+
+  // ---------- Pulsanti ----------
+  toggleBtn.onclick = () => (running ? stop() : start());
+
+  function plainText() {
+    const d = new Date();
+    const head = 'Riunione del ' + d.toLocaleDateString('it-IT') + '\n\n';
+    return head + lines.map(l => '[' + l.t + '] ' + l.text).join('\n');
+  }
+
+  $('copy').onclick = async () => {
+    if (!lines.length) return show('Non c\'è ancora testo da copiare.', 'err');
+    try { await navigator.clipboard.writeText(plainText()); show('Testo copiato! Ora puoi incollarlo dove vuoi (Word, email…).', 'info'); }
+    catch (e) { show('Non sono riuscito a copiare. Seleziona il testo col mouse e usa Ctrl+C.', 'err'); }
+  };
+
+  $('save').onclick = () => {
+    if (!lines.length) return show('Non c\'è ancora testo da salvare.', 'err');
+    const d = new Date();
+    const name = 'Riunione_' + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0') + '_' + String(d.getHours()).padStart(2, '0') + 'h' +
+      String(d.getMinutes()).padStart(2, '0') + '.txt';
+    const blob = new Blob([plainText()], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    show('File salvato nella cartella Download: ' + name, 'info');
+  };
+
+  $('clear').onclick = () => { $('modal').classList.add('show'); };
+  $('confirmNo').onclick = () => { $('modal').classList.remove('show'); };
+  $('confirmYes').onclick = () => {
+    $('modal').classList.remove('show');
+    if (running) stop();
+    lines = []; elapsedBefore = 0; $('timer').textContent = '00:00:00';
+    persist(); render(); $('statusText').textContent = 'Pronto';
+  };
+
+  $('bigger').onclick = () => { fontSize = Math.min(44, fontSize + 2); box.style.fontSize = fontSize + 'px'; persist(); };
+  $('smaller').onclick = () => { fontSize = Math.max(14, fontSize - 2); box.style.fontSize = fontSize + 'px'; persist(); };
+
+  // Avviso se si chiude la pagina mentre registra
+  window.addEventListener('beforeunload', (e) => { if (running) { e.preventDefault(); e.returnValue = ''; } });
+
+  // ---------- Avvio ----------
+  restore();
+  render();
+  if (!SR) {
+    toggleBtn.disabled = true;
+    show('Questo browser non supporta la trascrizione. Apri questa pagina con Google Chrome o Microsoft Edge.', 'err');
+  } else if (lines.length) {
+    $('statusText').textContent = 'Testo della riunione precedente recuperato';
+  }
+})();
+</script>
+</body>
+</html>
