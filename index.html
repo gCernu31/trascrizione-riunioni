@@ -121,6 +121,8 @@
   const $ = (id) => document.getElementById(id);
   const box = $('transcript'), toggleBtn = $('toggle'), msg = $('msg');
   const STORE_KEY = 'trascrizione-riunioni-v1';
+  const IS_ANDROID = /Android/i.test(navigator.userAgent);
+  const IS_SAMSUNG_BROWSER = /SamsungBrowser/i.test(navigator.userAgent);
 
   let lines = [];          // { t: "HH:MM", text: "..." }
   let running = false;     // l'utente vuole che stia ascoltando
@@ -188,6 +190,13 @@
   function addFinal(text) {
     text = text.trim();
     if (!text) return;
+    // protezione contro frasi duplicate (capita su alcuni dispositivi Android)
+    const last = lines[lines.length - 1];
+    if (last && last.text.toLowerCase() === (text.charAt(0).toUpperCase() + text.slice(1)).toLowerCase()) return;
+    if (last && IS_ANDROID && text.toLowerCase().startsWith(last.text.toLowerCase()) && last.t === nowHM()) {
+      // Android a volte rimanda la frase precedente allungata: sostituiscila invece di ripeterla
+      lines.pop(); render();
+    }
     text = text.charAt(0).toUpperCase() + text.slice(1);
     const l = { t: nowHM(), text };
     lines.push(l);
@@ -238,7 +247,9 @@
   function createRec() {
     const r = new SR();
     r.lang = 'it-IT';
-    r.continuous = true;
+    // Su Android la modalità continua di Chrome ripete le frasi: lì si ascolta una frase alla volta
+    // e la pagina riparte da sola subito dopo (onend qui sotto).
+    r.continuous = !IS_ANDROID;
     r.interimResults = true;
     r.maxAlternatives = 1;
 
@@ -272,7 +283,7 @@
         setTimeout(() => {
           if (!running) return;
           try { r.start(); } catch (e) { rec = createRec(); try { rec.start(); } catch (e2) {} }
-        }, 250);
+        }, IS_ANDROID ? 50 : 250);
       }
     };
     r.onstart = () => { if (msg.className === 'err' && running) msg.className = ''; };
@@ -359,6 +370,8 @@
   if (!SR) {
     toggleBtn.disabled = true;
     show('Questo browser non supporta la trascrizione. Apri questa pagina con Google Chrome o Microsoft Edge.', 'err');
+  } else if (IS_SAMSUNG_BROWSER) {
+    show('Stai usando Samsung Internet: per una trascrizione affidabile apri questa pagina con Google Chrome.', 'err');
   } else if (lines.length) {
     $('statusText').textContent = 'Testo della riunione precedente recuperato';
   }
